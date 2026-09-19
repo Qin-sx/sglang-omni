@@ -76,6 +76,10 @@ def build_sglang_tts_request(
         eos_token_ids={STOP_SPEECH_TOKEN},
     )
     req.tokenizer = tokenizer
+    # The MLX runner reads the conditioning prompt from the Req.
+    req._chatterbox_speaker_emb = state.speaker_embedding
+    req._chatterbox_cond_speech_tokens = list(state.cond_prompt_speech_tokens)
+    req._chatterbox_text_tokens = list(state.text_tokens)
 
     return ChatterboxSGLangRequestData(
         input_ids=torch.tensor(input_ids, dtype=torch.long),

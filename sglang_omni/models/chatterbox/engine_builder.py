@@ -28,8 +28,11 @@ class ChatterboxT3EngineBuilder(TtsEngineBuilder):
         self._stream_output_builder: Any | None = None
 
     def _uses_torch_mps(self) -> bool:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
         return (
-            self.device is not None
+            not use_mlx()
+            and self.device is not None
             and torch.device(self.device).type == "mps"
         )
 
@@ -51,6 +54,22 @@ class ChatterboxT3EngineBuilder(TtsEngineBuilder):
                 )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "chunked_prefill_size": -1,
+                "mem_fraction_static": 0.85,
+                "attention_backend": "torch_native",
+                "sampling_backend": "pytorch",
+                "dtype": dtype,
+                "mlx_enable_sampling": True,
+            }
         if self._uses_torch_mps():
             return {
                 "max_running_requests": 1,
@@ -101,15 +120,21 @@ class ChatterboxT3EngineBuilder(TtsEngineBuilder):
             torch.mps.empty_cache()
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            from sglang_omni.model_runner.mlx_model_worker import (
+                MlxSchedulerModelRunner,
+            )
+
+            return MlxSchedulerModelRunner(model_worker, output_proc)
         if self._uses_torch_mps():
             from sglang_omni.models.chatterbox.torch_mps_runner import (
                 ChatterboxT3TorchMpsModelRunner,
             )
 
             return ChatterboxT3TorchMpsModelRunner(model_worker, output_proc)
-        raise NotImplementedError(
-            "Chatterbox-Turbo CUDA and MLX backends are not wired yet"
-        )
+        raise NotImplementedError("Chatterbox-Turbo CUDA backend is not wired yet")
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
