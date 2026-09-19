@@ -34,6 +34,16 @@ class ChatterboxPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             next="tts_engine",
         ),
+        # Stages are built in list order; the vocoder precedes the engine so
+        # its weights are resident before the engine's KV pool is sized.
+        StageConfig(
+            name="vocoder",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_vocoder_executor",
+            gpu=0,
+            terminal=True,
+            can_accept_stream_before_payload=True,
+        ),
         EngineStageConfig(
             name="tts_engine",
             process="pipeline",
@@ -42,14 +52,6 @@ class ChatterboxPipelineConfig(PipelineConfig):
             gpu=0,
             next="vocoder",
             stream_to=["vocoder"],
-        ),
-        StageConfig(
-            name="vocoder",
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            gpu=0,
-            terminal=True,
-            can_accept_stream_before_payload=True,
         ),
     ]
 

@@ -16,8 +16,16 @@ from sglang_omni.models.chatterbox.request_builders import START_SPEECH_TOKEN
 from sglang_omni.models.chatterbox.stages import CHATTERBOX_INSTALL_HINT
 
 
-def install_torch_mps_t3_model(checkpoint_dir: str, device: str) -> Any:
-    """Load chatterbox-tts's T3 on MPS, replacing the SGLang model."""
+def install_torch_mps_t3_model(
+    checkpoint_dir: str, device: str, placeholder: Any | None = None
+) -> Any:
+    """Load chatterbox-tts's T3 on MPS, replacing the SGLang placeholder model."""
+    if placeholder is not None:
+        # Drop the placeholder weights before loading T3 so the two models
+        # never peak together on MPS.
+        placeholder.to("meta")
+        gc.collect()
+        torch.mps.empty_cache()
     try:
         from chatterbox.models.t3 import T3
         from chatterbox.models.t3.modules.t3_config import T3Config
@@ -55,6 +63,8 @@ class _DecodeState:
     past_key_values: Any = None
     past_token_ids: list[int] = field(default_factory=list)
     logits_processors: Any = None
+    temperature: float = 1.0
+    generator: Any = None
 
 
 class ChatterboxT3TorchMpsModelRunner(ModelRunner):
@@ -113,8 +123,12 @@ class ChatterboxT3TorchMpsModelRunner(ModelRunner):
             [state.past_token_ids], dtype=torch.long, device=logits.device
         )
         processed = state.logits_processors(input_ids, logits)
+        if state.temperature <= 0:
+            return processed.argmax(-1)
         probs = torch.softmax(processed, dim=-1)
-        return torch.multinomial(probs, num_samples=1).squeeze(-1)
+        return torch.multinomial(
+            probs, num_samples=1, generator=state.generator
+        ).squeeze(-1)
 
     @torch.inference_mode()
     def custom_prefill_forward(
@@ -159,10 +173,15 @@ class ChatterboxT3TorchMpsModelRunner(ModelRunner):
         hidden = output.last_hidden_state[:, -1:]
         logits = t3.speech_head(hidden)[:, -1, :]
 
+        generator = None
+        if data.seed is not None:
+            generator = torch.Generator(device=self.device).manual_seed(int(data.seed))
         state = _DecodeState(
             past_key_values=output.past_key_values,
             past_token_ids=[START_SPEECH_TOKEN],
             logits_processors=self._build_logits_processors(data),
+            temperature=data.temperature,
+            generator=generator,
         )
         next_token = self._sample(logits, state)
         state.past_token_ids.append(int(next_token.item()))

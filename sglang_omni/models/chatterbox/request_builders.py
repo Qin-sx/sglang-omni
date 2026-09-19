@@ -30,6 +30,7 @@ class ChatterboxSGLangRequestData(SGLangARRequestData):
     cond_prompt_speech_tokens: list[int] = field(default_factory=list)
     text_tokens: list[int] = field(default_factory=list)
     engine_start_s: float = 0.0
+    seed: int | None = None
 
 
 def build_sglang_tts_request(
@@ -87,6 +88,7 @@ def build_sglang_tts_request(
         top_p=state.top_p,
         top_k=state.top_k,
         repetition_penalty=state.repetition_penalty,
+        seed=state.seed,
     )
 
 

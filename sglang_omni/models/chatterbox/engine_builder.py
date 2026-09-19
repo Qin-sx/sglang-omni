@@ -95,7 +95,7 @@ class ChatterboxT3EngineBuilder(TtsEngineBuilder):
             )
 
             model_worker.model_runner.model = install_torch_mps_t3_model(
-                checkpoint_dir, device
+                checkpoint_dir, device, model_worker.model_runner.model
             )
             gc.collect()
             torch.mps.empty_cache()
