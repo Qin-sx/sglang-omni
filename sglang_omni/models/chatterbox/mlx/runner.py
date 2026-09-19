@@ -8,10 +8,21 @@ from typing import Any
 
 import mlx.core as mx
 
+_SPEECH_VOCAB_SIZE = 6563
+_START_SPEECH_TOKEN = 6561
+_SPEECH_IDS = mx.arange(_SPEECH_VOCAB_SIZE)
+mx.eval(_SPEECH_IDS)
+
 
 class ChatterboxT3MlxModelRunner:
-    """Customize prompt prefill with the T3 conditioning prefix; generic MLX
-    cache/decode stays upstream."""
+    """Customize prompt prefill with the T3 conditioning prefix and apply the
+    repetition penalty in the lazy graph; generic MLX cache/decode stays
+    upstream."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._chatterbox_repetition_penalties: dict[str, float] = {}
+        self._chatterbox_seen_masks: dict[str, mx.array] = {}
 
     def _load_model(self) -> None:
         from sglang.srt.hardware_backend.mlx.remote_code_gate import (
@@ -62,6 +73,41 @@ class ChatterboxT3MlxModelRunner:
             cond_tokens = mx.array([list(cond_tokens)], dtype=mx.int32)
         return speaker, cond_tokens, text_tokens
 
+    def _constrain_logits(
+        self, logits: mx.array, req_ids: list[str]
+    ) -> mx.array:
+        """Apply the repetition penalty to already-seen speech tokens."""
+        rows = []
+        for index, req_id in enumerate(req_ids):
+            row = logits[index]
+            penalty = self._chatterbox_repetition_penalties.get(req_id, 1.0)
+            if penalty != 1.0:
+                seen = self._chatterbox_seen_masks[req_id]
+                adjusted = mx.where(row > 0, row / penalty, row * penalty)
+                row = mx.where(seen, adjusted, row)
+            rows.append(row)
+        return mx.stack(rows)
+
+    def _record_seen_token(self, req_id: str, token_id: int) -> None:
+        if not 0 <= token_id < _START_SPEECH_TOKEN:
+            return
+        seen = self._chatterbox_seen_masks[req_id] | (_SPEECH_IDS == token_id)
+        mx.eval(seen)
+        self._chatterbox_seen_masks[req_id] = seen
+
+    def _select_tokens_with_logprobs(
+        self,
+        last_logits: mx.array,
+        req_ids: list[str],
+        caches: list[list[Any]],
+        edit_rows: mx.array | None = None,
+        logprob_spec: Any = None,
+    ):
+        last_logits = self._constrain_logits(last_logits, req_ids)
+        return super()._select_tokens_with_logprobs(
+            last_logits, req_ids, caches, edit_rows, logprob_spec
+        )
+
     def prefill_start(
         self,
         req_id: str,
@@ -88,6 +134,12 @@ class ChatterboxT3MlxModelRunner:
             self._req_sampling[req_id] = MlxSamplingParams.from_req(
                 req, deterministic_seeding=self._deterministic_seeding
             )
+        self._chatterbox_repetition_penalties[req_id] = float(
+            req.sampling_params.repetition_penalty
+        )
+        self._chatterbox_seen_masks[req_id] = mx.zeros(
+            (_SPEECH_VOCAB_SIZE,), dtype=mx.bool_
+        )
 
         speaker, cond_tokens, text_tokens = self._request_prompt(req)
         embeddings = self.model._build_inputs_embeds(speaker, cond_tokens, text_tokens)
@@ -106,6 +158,27 @@ class ChatterboxT3MlxModelRunner:
             synced_offset=0,
             lazy_logprobs=lazy_logprobs,
         )
+
+    def prefill_finalize(self, pending: Any) -> int:
+        token_id = super().prefill_finalize(pending)
+        self._record_seen_token(pending.req_id, int(token_id))
+        return token_id
+
+    def decode_batch_finalize(self, pending: Any) -> list[int]:
+        token_ids = super().decode_batch_finalize(pending)
+        for req_id, token_id in zip(pending.req_ids, token_ids):
+            self._record_seen_token(req_id, int(token_id))
+        return token_ids
+
+    def remove_request(self, req_id: str) -> None:
+        super().remove_request(req_id)
+        self._chatterbox_repetition_penalties.pop(req_id, None)
+        self._chatterbox_seen_masks.pop(req_id, None)
+
+    def clear(self) -> None:
+        super().clear()
+        self._chatterbox_repetition_penalties.clear()
+        self._chatterbox_seen_masks.clear()
 
 
 def make_chatterbox_t3_mlx_runner_class():
