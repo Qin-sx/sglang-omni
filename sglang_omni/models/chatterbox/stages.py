@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+import numpy as np
 import torch
 
 from sglang_omni.models.chatterbox.payload_types import ChatterboxState
@@ -29,6 +31,11 @@ ENC_COND_LEN = 15 * S3_SR
 SPEECH_COND_PROMPT_LEN = 375
 # S3Gen consumes references at 24 kHz and produces 24 kHz output.
 S3GEN_SR = 24000
+# Voice-clone reference clips shorter than this produce too few cond-prompt
+# tokens and degrade synthesis, so they are rejected.
+REFERENCE_MIN_DURATION_S = 5.0
+# Reference clips are loudness-normalised to this target before encoding.
+REFERENCE_TARGET_LUFS = -27.0
 
 CHATTERBOX_INSTALL_HINT = (
     "Chatterbox-Turbo support requires the `chatterbox-tts` package:\n"
@@ -62,6 +69,20 @@ def _punc_norm(text: str) -> str:
     if not any(text.endswith(p) for p in (".", "!", "?", "-", ",")):
         text += "."
     return text
+
+
+def _norm_loudness(wav: np.ndarray, sr: int, target_lufs: float) -> np.ndarray:
+    """Scale wav to a target integrated loudness; silent clips are unchanged."""
+    import pyloudnorm as ln
+
+    meter = ln.Meter(sr)
+    loudness = meter.integrated_loudness(wav)
+    # Coerce to a Python float so wav * gain keeps the input dtype (pyloudnorm
+    # reports a float64 loudness, which would promote float32 audio to float64).
+    gain_linear = float(10.0 ** ((target_lufs - loudness) / 20.0))
+    if math.isfinite(gain_linear) and gain_linear > 0.0:
+        wav = wav * gain_linear
+    return wav
 
 
 @dataclass(frozen=True)
@@ -165,6 +186,13 @@ class ChatterboxT3ReferenceEncodeHook(
 
     def encode_one(self, item: _ChatterboxReferenceInput) -> ChatterboxT3Reference:
         wav = self._load_reference_wav(item)
+        duration_s = len(wav) / S3_SR
+        if duration_s <= REFERENCE_MIN_DURATION_S:
+            raise ValueError(
+                "Chatterbox voice-clone reference audio must be longer than "
+                f"{REFERENCE_MIN_DURATION_S:g} seconds; got {duration_s:.2f}s"
+            )
+        wav = _norm_loudness(wav, S3_SR, REFERENCE_TARGET_LUFS)
         ve_embed = torch.from_numpy(
             self._ve.embeds_from_wavs([wav], sample_rate=S3_SR)
         )
@@ -432,6 +460,7 @@ def create_sglang_tts_engine_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     max_new_tokens: int = 1024,
+    server_args_overrides: dict[str, Any] | None = None,
 ):
     """Returns OmniScheduler for the T3 autoregressive engine."""
     from sglang_omni.models.chatterbox.engine_builder import (
@@ -442,4 +471,5 @@ def create_sglang_tts_engine_executor(
         model_path,
         device=device,
         gpu_id=gpu_id,
+        server_args_overrides=server_args_overrides,
     )

@@ -36,6 +36,16 @@ class ChatterboxT3EngineBuilder(TtsEngineBuilder):
             and torch.device(self.device).type == "mps"
         )
 
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        from sglang.srt.arg_groups.model_override_base import resolved_view
+
+        cfg = resolved_view(server_args)
+        if self._uses_torch_mps() and cfg.max_running_requests != 1:
+            raise ValueError(
+                "Chatterbox-Turbo Torch MPS requires max_running_requests=1"
+            )
+        super().validate_before_infrastructure(server_args)
+
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from sglang_omni.models.chatterbox.hf_config import (
             register_chatterbox_hf_config,
