@@ -31,6 +31,8 @@ ENC_COND_LEN = 15 * S3_SR
 SPEECH_COND_PROMPT_LEN = 375
 # S3Gen consumes references at 24 kHz and produces 24 kHz output.
 S3GEN_SR = 24000
+# The S3Gen prompt is truncated to this many seconds before embedding.
+DEC_COND_LEN_S = 10
 # Voice-clone reference clips shorter than this produce too few cond-prompt
 # tokens and degrade synthesis, so they are rejected.
 REFERENCE_MIN_DURATION_S = 5.0
@@ -232,8 +234,10 @@ class ChatterboxS3GenReferenceEncodeHook(
         )
 
     def encode_one(self, item: _ChatterboxReferenceInput) -> dict[str, Any]:
-        wav = self._load_reference_wav(item)
-        return self._s3gen.embed_ref(wav, S3GEN_SR)
+        wav = _norm_loudness(
+            self._load_reference_wav(item), S3GEN_SR, REFERENCE_TARGET_LUFS
+        )
+        return self._s3gen.embed_ref(wav[: DEC_COND_LEN_S * S3GEN_SR], S3GEN_SR)
 
     def store_artifact(self, artifact: dict[str, Any]) -> dict[str, Any]:
         return {

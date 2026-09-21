@@ -30,7 +30,7 @@ and `numpy<2.0.0`, which would downgrade the pinned sglang-omni stack.
 On Apple Silicon the engine defaults to one request at a time. Torch/MPS
 requires `max_running_requests=1`; MLX accepts `> 1` (via
 `--tts_engine.engine.max_running_requests`) but it trades latency for almost no
-throughput gain, so the default stays `1`. CUDA uses continuous batching.
+throughput gain, so the default stays `1`. CUDA is not wired yet.
 
 ## Reference audio constraints
 
@@ -54,8 +54,10 @@ covers only the long-reference subset. This matches the upstream
 
 ## Synthesising speech
 
-Chatterbox-Turbo is voice-clone only: every request needs a reference clip and
-its transcript. There is no zero-shot `voice` preset.
+Chatterbox-Turbo is a voice-clone model. Supply a reference clip and its
+transcript to clone a speaker; a request without `references` falls back to the
+built-in voice shipped in the checkpoint's `conds.pt`. There is no zero-shot
+`voice` preset.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -81,16 +83,16 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 |---|---|---|---|
 | `model` | string | served model | Served model identifier |
 | `input` | string | (required) | Text to synthesize |
-| `references` | list | (required) | Reference audio for cloning. Each item has `audio_path` (local path, file URL, data URL, or HTTP URL) and `text` (transcript). The audio must be longer than 5 seconds |
+| `references` | list | `null` | Reference audio for cloning. Each item has `audio_path` (local path, file URL, data URL, or HTTP URL) and `text` (transcript). The audio must be longer than 5 seconds. Omit to use the checkpoint's built-in voice |
 | `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `max_new_tokens` | int | `604` | Cap on generated speech tokens |
 | `temperature` | float | `0.8` | Sampling temperature |
 | `top_k` | int | `1000` | Top-k filtering |
 | `top_p` | float | `0.95` | Nucleus filtering |
 | `repetition_penalty` | float | `1.2` | Penalty applied to already-seen speech tokens |
-| `seed` | int | `null` | RNG seed; fixes the output for a given request |
+| `seed` | int | `null` | RNG seed for T3 token sampling on Torch/MPS. MLX sampling and the S3Gen vocoder do not consume a per-request seed, so the waveform is not byte-reproducible |
 | `response_format` | string | `"wav"` | Output audio format (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
-| `stream` | bool | `false` | Enable raw PCM streaming |
+| `stream` | bool | `false` | Streaming vocoder output is not supported |
 
 ## Performance
 
